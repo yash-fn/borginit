@@ -36,7 +36,7 @@ if [ "$CURRENT_VERSION" != "$NEW_VERSION" ] || $BOOL; then
 	rsync -aHAX bin/ history/bin/
 	history/borg info repo >/dev/null 2>&1 || history/borg init -e none repo
 	history/borg delete repo::"$NEW_VERSION" >/dev/null 2>&1
-	history/borg create repo::"$NEW_VERSION" src/bin src/borg
+	history/borg create --chunker-params 10,23,16,4095 repo::"$NEW_VERSION" src/bin src/borg
 fi
 
 if [[ $1 =~ ^([0-9]+\.?){3}$ ]]; then
