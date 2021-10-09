@@ -1,0 +1,74 @@
+#!/bin/bash
+
+CWD=$(pwd)
+cd "$(dirname "$(readlink -f "$0")")"
+
+if [ "$1" = "list" ]; then history/borg list --short repo && exit 0; fi 
+
+if [ ! -d current ]; then
+mkdir current
+fi
+
+if [ $(rsync -aniHAX bin/ current/bin/ | wc -l) -ne 0 ]; then
+	BOOL=true
+else
+	BOOL=false
+fi
+
+rsync -aHAX bin/ current/bin/
+
+if [ ! -L current/borg ]; then
+ln -s bin/borg-docker current/borg
+fi
+
+CURRENT_VERSION=$(cat current/bin/VERSION)
+
+./current/borg update-binary
+
+NEW_VERSION=$(cat current/bin/VERSION)
+
+if [ "$CURRENT_VERSION" != "$NEW_VERSION" ] || $BOOL; then
+	echo "Saving to history"
+	rsync -aHAX bin/ current/bin/
+	history/borg delete repo::"$NEW_VERSION"
+	history/borg create repo::"$NEW_VERSION" src/bin src/borg
+fi
+
+if [[ $1 =~ ^([0-9]+\.?){3}$ ]]; then
+
+	echo "Requesting specific version from history: $1"
+	if [ -d history/extract ]; then trash history/extract; fi
+	
+	history/borg extract repo::$1  
+
+	if [ $? -ne 0 ]; then
+		echo "Only the following versions are available: " 
+		history/borg list --short repo
+		exit 1 
+	fi
+
+	if [ -d "$CWD"/bin ]; then trash "$CWD"/bin ; fi
+	
+	rsync -aHAX history/extract/ "$CWD"/
+
+	"$CWD"/borg --version
+
+	rm -rf history/extract
+
+else
+	
+	if [ -f "$CWD"/bin/VERSION ]; then
+		echo -n "Upgrading: $(cat "$CWD"/bin/VERSION) to "
+	else
+		echo -n "Fresh installation: "
+	fi
+	
+	rsync -aHAX current/bin/ "$CWD"/bin/ --delete
+	rsync -aHAX current/borg "$CWD"/borg
+	
+	echo "$(cat "$CWD"/bin/VERSION)"
+	
+	"$CWD"/borg --version
+
+fi
+

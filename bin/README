@@ -1,0 +1,83 @@
+TLDR:
+
+Prep:
+1) symlink borgit into your path at /usr/local/bin or ~/bin. Must be symlink to
+find bin folder
+2) change to empty directory with cd
+3) change Dockerfile and docker-entrypoint.sh symlinks to point to their
+ubuntu variant if you want best compatibility or stick with default alpine for
+smallest image. alpine produces errors but otherwise appears to work fine so I
+stuck with using alpine for smaller images.
+4) the following is needed only if you want borg mount to work
+4) mkdir ~/.cache/borg_host ~/.config/borg_host && ln -s ~/.cache/borg_host
+~/.cache/borg && ln -s ~/.config/borg_host ~/.config/borg
+5.) Run as appropriate user because borg wrapper script with use same
+permissions as active user. 
+
+
+Usage:
+1) borgit
+2) source bin/borg-complete for autocompletion
+3) borg init --encryption none repo
+4) borg create repo::backupname src/
+5) borg mount repo::backupname mnt
+6) borg extract repo::backupname
+
+Basically repo is where repo is stored. mnt is empty directory serving as
+mountpoint for borg mount. extract is where borg extracts to. src is read-only
+source dir. thus simply delete src folder and replace with symlink to folder
+with files needing to be backed up. same trick can be used for extract folder
+with symlink to same as src folder if you want restore to original location. 
+
+For host usage without docker:
+simply replace borg symlink with symlink to bin/borg instead of
+bin/borg-docker.  
+
+
+
+
+
+rambling documentation:
+
+borgit:
+ensure current directory is where you want borg to be installed. Preferably
+keep it empty to ensure nothing important gets deleted. Ensure borgit is
+symlinked into your path via /usr/local/bin or ~/bin via .bashrc (important because it must be able to find the bin
+folder) then simply:
+
+borgit
+
+you now have an installed borg environment.
+
+
+config:
+ensure extract and src point to whatever directories you want via symlink or
+for extract you can keep as regular directory for partial extracts and etc.
+
+So yeah basically just ensure extract and src point to the correct
+directories.
+
+
+
+Run:
+source bin/borg-complete #or add it to ~/.bashrc
+
+then ensure your working directory is same as ../borg
+
+then simply run borg as normal:
+
+borg ...
+
+
+../borg is a symlink to either ./borg for direct on host binary or ./borg-docker for a docker container wrapper that runs ./borg within an alpine or ubuntu container
+
+borg-complete is a bash auto completion script that you should source with
+source borg-complete
+
+borg.tar.xz is the docker image
+
+docker-entrypoint.sh is the entrypoint script for the docker image
+
+Dockerfile ... self explanatory
+
+VERSION contains version that this borgit was created from

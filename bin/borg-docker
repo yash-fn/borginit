@@ -1,0 +1,252 @@
+#!/bin/bash
+
+cd "$(dirname "$0")"
+
+#Config
+MNT=mnt
+REPO=repo
+SRC=src
+EXTRACT=extract
+CACHE=cache
+CONFIG=config
+
+BIN=bin
+
+for x in "$BIN"; do
+	DIR="$(readlink -f $x)"
+	if [ ! -d "$DIR" ]; then echo "$x or $DIR is not a valid or reachable directory. Please reconfigure script or rerun borgit."; exit 1; fi
+done
+
+for x in "$SRC" "$MNT" "$REPO" "$EXTRACT" "$CACHE" "$CONFIG"; do
+	DIR="$(readlink -f $x)"
+	if [ ! -d "$DIR" ]; then mkdir $DIR ; fi
+done
+
+BINARY=$BIN/borg
+IMAGEFILE=$BIN/borgruntime.txz
+SOURCEPATH=$BIN/borgsource.tgz
+DOCKERFILE=$BIN/Dockerfile
+VERSIONFILE=$BIN/VERSION
+
+function filexists {
+	if [ ! -f "$1" ]; then
+		echo "Error: file $1 does not exist."	
+		if [ -n "$2" ]; then
+			echo $2
+			exit 1
+		else
+			return 1
+		fi
+	else
+		return 0
+	fi
+
+}
+
+function source_exist {
+if [ ! -f $SOURCEPATH ]; then echo "Cannot find source code archive. Please rectify." && exit 1; fi
+}
+
+#Warning Script will if required write to $VERSIONFILE and $IMAGEFILE 
+function verify_install {
+
+	#Ensure Version File Exists
+	GREPSTRING="([0-9]+\.?)+" #Attempts to get version number from borg binary version flag output
+	if filexists "$VERSIONFILE" ; then
+		VERSION=$(cat "$VERSIONFILE")
+	else
+		echo "No VERSION file, so trying to determine version from source files."
+		source_exist
+		TEMPPATH=$(mktemp -d --tmpdir=/tmp borgit.XXXX)
+		VERPATH=$(tar tf $SOURCEPATH  | grep 'src/borg/_version.py')
+		tar xf $SOURCEPATH -C $TEMPPATH $VERPATH
+		VERPATH=$(find $TEMPPATH -type f)
+		VERSION=$(cat $VERPATH | grep -oP $'version = \'\K([0-9]+\.?){3}')
+		rm -rf $TEMPPATH
+		if [ -z $VERSION ]; then
+			echo "Cannot get VERSION # from source" && exit 1
+		else
+			echo $VERSION > $VERSIONFILE
+		fi
+	fi	  
+
+	#Load Docker Image if not present
+	for i in {0..1}; do
+		if ! docker image inspect borg:$VERSION >/dev/null 2>&1; then
+			if [ $i -eq 0 ]; then
+				if ! ( test -f "$IMAGEFILE" && docker load -i <(xzcat "$IMAGEFILE") ) ; then
+					filexists "$DOCKERFILE" "Error: docker image with tag 'borg:$VERSION' does not exist, was not able to be loaded from an associated $IMAGEFILE archive, and was not able to be built from an associated $DOCKERFILE. As all options have been exhausted, program exiting. Please rerun borgit to attempt installing and running the latest borg."
+					echo "Attempting to build $DOCKERFILE"
+					source_exist
+					docker build -f $DOCKERFILE -t borg:$VERSION "$BIN" &&\
+							docker save borg:$VERSION | xz -z -9 -T0 > "$IMAGEFILE"
+				fi
+			else
+				echo "Error: docker image with tag 'borg:$VERSION' does not exist, was not found, could not be loaded, and could not be built. Please reinstall borg."
+				exit 1
+			fi
+		else
+			break
+		fi
+	done
+	
+	#Create $IMAGEFILE if it doesn't exist
+	if ! filexists "$IMAGEFILE"; then
+		if [ -f "$DOCKERFILE" -a -f "$SOURCEPATH" ]; then
+			echo "rebuilding image file ..."
+			docker build -f $DOCKERFILE -t borg:$VERSION "$BIN"
+		else
+			echo "saving image file ..."
+		fi
+		docker save borg:$VERSION | xz -z -9 -T0 > "$IMAGEFILE"
+	fi
+
+
+	#Ensure borg binary exists
+	if [ ! -f "$BINARY" ]; then
+		docker create borg:$VERSION
+		DOCKERID=$(docker ps -lq)
+		docker cp $DOCKERID:/borg/borg $BINARY
+		docker rm $DOCKERID
+	fi
+	if [ ! -x "$BINARY" ]; then echo "Error: borg binary not executable file" && exit 1; fi
+
+	#Check to see borg binary version and VERSION match
+	if ! [ "$(docker run --rm -v "$(readlink -f "$BINARY")":/borg/borg:ro --entrypoint /borg/borg borg:$VERSION --version | grep -oE $GREPSTRING )" = "$VERSION" ]; then
+			echo "Error: Binary Version and Version stated in $VERSIONFILE (which was used to select appropriate docker image, which was found for version stated in file) do NOT match. Please remedy this before progressing."; 
+			exit 1;
+   	fi
+
+}
+
+function getlinks {
+	curl -s 'https://api.github.com/repos/borgbackup/borg/releases/latest' | jq -r ".assets[] | select(.name | test(\"${spruce_type}\")) | .browser_download_url"
+}
+
+if [ "$1" = "update-binary" ]; then
+	NEW_VERSION=$(getlinks | grep -oP 'download/\K([0-9]+\.?){3}' | uniq)
+	if [ ! -f "$VERSIONFILE" ]; then ./$(basename $0) --version >/dev/null 2>&1 ; fi
+	VERSION=$(cat "$VERSIONFILE")
+	if [ "$VERSION" != "$NEW_VERSION" ]; then
+		echo "Upgrading $VERSION to $NEW_VERSION"
+		trash $IMAGEFILE $VERSIONFILE $BINARY $SOURCEPATH
+		TEMPSOURCE=$(mktemp --tmpdir=/tmp borgsource.XXXX)
+		wget --no-verbose -O $TEMPSOURCE $(getlinks | grep "borgbackup-$NEW_VERSION.tar.gz$") 2>/dev/null
+		cp $TEMPSOURCE $SOURCEPATH
+		rm -rf $TEMPSOURCE
+		#Get specific prebuilt binaries:
+		TEMPBINARY=$(mktemp --tmpdir=/tmp borgbinary.XXXX)
+		TEMPASC=$(mktemp --tmpdir=/tmp borgbinary.XXXX.asc)
+		ARCH=$(uname -m)
+		#Pretty text colors
+		YELLOW='\033[0;33m'
+		GREEN='\033[1;32m'
+		RED='\033[1;31m'
+		NC='\033[0m'
+		case $ARCH in
+			arm*|aarch*)
+				echo -e "<<<<<< Please import keys with:"
+				echo -e "${GREEN}gpg --import <(curl https://borg.bauerj.eu/borg-binary-builder.asc)${NC}"
+				echo -e "<<<<<< if not already done"
+				;;
+			x86_64)
+				echo -e "<<<<<< Please import keys with:"
+				echo -e "${GREEN}gpg --recv-keys 9F88FB52FAF7B393${NC}"
+				echo -e "<<<<<< if not already done"
+				;;
+		esac
+		case $ARCH in
+			armv7l)
+				wget --no-verbose -O $TEMPASC "https://borg.bauerj.eu/bin/borg-$NEW_VERSION-armv7.asc" 2>/dev/null
+				wget --no-verbose -O $TEMPBINARY "https://borg.bauerj.eu/bin/borg-$NEW_VERSION-armv7" 2>/dev/null
+				;;
+			arm64|aarch64)
+				wget --no-verbose -O $TEMPASC "https://borg.bauerj.eu/bin/borg-$NEW_VERSION-arm64.asc" 2>/dev/null
+				wget --no-verbose -O $TEMPBINARY "https://borg.bauerj.eu/bin/borg-$NEW_VERSION-arm64" 2>/dev/null
+				;;
+			x86_64)
+				wget --no-verbose -O $TEMPASC $(getlinks | grep "borg-linux64.asc$") 2>/dev/null
+				wget --no-verbose -O $TEMPBINARY $(getlinks | grep "borg-linux64$") 2>/dev/null
+				;;
+			*)
+				echo "Pre-Built binaries not available for this architecture. Will attempt to use manually built binary instead."
+				;;
+		esac
+		if [ $? -ne 0 ]; then
+			echo "Couldn't download binary. Latest pre-built binary possibly not yet released. Will attempt to use manually built binary instead."
+		elif [ -s $TEMPBINARY -a -s $TEMPASC ]; then
+			if gpg --verify $TEMPASC $TEMPBINARY; then
+				cp $TEMPBINARY $BINARY
+				chmod a+x $BINARY
+			else
+				echo -e "${RED}Error. Could not verify download was signed with correct gpg key. Aborting and attempting to use manually compiled binary instead.${NC}"
+			fi
+		fi
+		rm -rf $TEMPBINARY $TEMPASC
+	else
+		echo "Already up to date"
+	fi
+	exec ./$(basename $0) --version
+fi
+
+#UNIT tests will speed up development
+verify_install
+
+IMAGE="borg:$VERSION"
+BINARYMOUNT="-v '$(readlink -f "$BINARY")':/borg/borg:ro"
+
+#help commands should just print out stuff so just run here so things with alternative implementations like borg mount --help can still work
+HELP="docker run --rm $BINARYMOUNT --entrypoint /borg/borg $IMAGE $@"
+value=--help
+array=$@
+if [[ " ${array[*]} " =~ " ${value} " ]]; then
+	eval $HELP
+	exit 0
+fi
+
+USER="$(id -u)"
+GROUP="$(id -g)"
+PERMISSIONS="-e USERID=$USER -e GROUPID=$GROUP" 
+CONTAINERHOME="$(docker run $PERMISSIONS -e ENTRYPOINT=/bin/sh --rm $IMAGE -c 'echo $HOME')"
+
+#Start with Borg Cache and config Directory since its implemented slightly differently
+VOLUMES="-v '$(readlink -f "$CACHE")':'$CONTAINERHOME/.cache/borg' -v '$(readlink -f "$CONFIG")':'$CONTAINERHOME/.config/borg'"
+
+#Read/Write Volumes
+for DIR in "$MNT" "$REPO" ; do
+	VOLUMES="$VOLUMES -v '$(readlink -f "$DIR")':'/borg/$(basename "$DIR")'"
+done
+
+#Common Vars below and differing ones within case statement
+case $1 in
+	help)
+		eval $HELP
+		exit 0
+		;;
+	mount)
+		LIVEDIR="-v '$(readlink -f "$EXTRACT")':'/borg/$EXTRACT' -v '$(readlink -f "$SRC")':'/borg/$SRC':ro"
+		ENTRYPOINT=/borg/borg
+		MOUNTOPTIONS="-d --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined"
+		BORG="docker run $PERMISSIONS -e ENTRYPOINT=$ENTRYPOINT $MOUNTOPTIONS $VOLUMES $LIVEDIR $BINARYMOUNT --workdir /borg $IMAGE"
+		shift 1
+		eval "$BORG mount -f" '"$@"' "< /dev/stdin"
+		DOCKERID=$(docker ps -lq) 
+		docker logs $DOCKERID
+		VIEWCOMMAND="docker exec -it --user $USER:$GROUP $DOCKERID bash && docker stop $DOCKERID"	
+		echo $VIEWCOMMAND
+		eval $VIEWCOMMAND
+		exit 0
+		;;
+	extract)
+		LIVEDIR="-v '$(readlink -f "$EXTRACT")':'/borg/$SRC'"
+		;;
+	*)
+		LIVEDIR="-v '$(readlink -f "$SRC")':'/borg/$SRC':ro"
+		;;
+esac
+
+ENTRYPOINT=/borg/borg
+MOUNTOPTIONS="-i --rm"
+BORG="docker run $PERMISSIONS -e ENTRYPOINT=$ENTRYPOINT $MOUNTOPTIONS $VOLUMES $LIVEDIR $BINARYMOUNT --workdir /borg $IMAGE"
+eval "$BORG" '"$@"' "< /dev/stdin"
+
