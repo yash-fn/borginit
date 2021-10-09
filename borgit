@@ -5,32 +5,37 @@ cd "$(dirname "$(readlink -f "$0")")"
 
 if [ "$1" = "list" ]; then history/borg list --short repo && exit 0; fi 
 
-if [ ! -d current ]; then
-mkdir current
+if [ ! -d history ]; then
+mkdir history
 fi
 
-if [ $(rsync -aniHAX bin/ current/bin/ | wc -l) -ne 0 ]; then
+if [ $(rsync -aniHAX bin/ history/bin/ | wc -l) -ne 0 ]; then
 	BOOL=true
 else
 	BOOL=false
 fi
 
-rsync -aHAX bin/ current/bin/
+rsync -aHAX bin/ history/bin/
 
-if [ ! -L current/borg ]; then
-ln -s bin/borg-docker current/borg
+if [ ! -L history/borg ]; then
+ln -s bin/borg-docker history/borg
 fi
 
-CURRENT_VERSION=$(cat current/bin/VERSION)
+if [ ! -L history/src ]; then
+ln -s . history/src
+fi
 
-./current/borg update-binary
+CURRENT_VERSION=$(cat history/bin/VERSION)
 
-NEW_VERSION=$(cat current/bin/VERSION)
+./history/borg update-binary
+
+NEW_VERSION=$(cat history/bin/VERSION)
 
 if [ "$CURRENT_VERSION" != "$NEW_VERSION" ] || $BOOL; then
 	echo "Saving to history"
-	rsync -aHAX bin/ current/bin/
-	history/borg delete repo::"$NEW_VERSION"
+	rsync -aHAX bin/ history/bin/
+	history/borg info repo >/dev/null 2>&1 || history/borg init -e none repo
+	history/borg delete repo::"$NEW_VERSION" >/dev/null 2>&1
 	history/borg create repo::"$NEW_VERSION" src/bin src/borg
 fi
 
@@ -63,8 +68,8 @@ else
 		echo -n "Fresh installation: "
 	fi
 	
-	rsync -aHAX current/bin/ "$CWD"/bin/ --delete
-	rsync -aHAX current/borg "$CWD"/borg
+	rsync -aHAX history/bin/ "$CWD"/bin/ --delete
+	rsync -aHAX history/borg "$CWD"/borg
 	
 	echo "$(cat "$CWD"/bin/VERSION)"
 	
