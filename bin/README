@@ -1,3 +1,9 @@
+a borg wrapper intended for use with cold storages where you need to guarantee that your backup will be accessible in the future.
+
+Requirements + assumptions for future access: docker installed docker backwards compatible (assumed that docker in future will still be able to utilize images from the past) compatible cpu ISA as the one used to create backup (you can augment this by storing multiple borg binaries for each ISA).
+
+borg binary only requires compatible ISA + glibc + OS. Docker ensures glibc + OS and by storing the binary, you can ensure against backwards incompatible changes to borg project or if borg project dies like attic died.
+
 TLDR:
 
 Prep:
